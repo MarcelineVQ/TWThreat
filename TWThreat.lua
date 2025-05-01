@@ -22,7 +22,7 @@ local TWT = CreateFrame("Frame")
 
 local has_superwow = SUPERWOW_VERSION or SetAutoloot
 
-TWT.addonVer = '1.2.3'
+TWT.addonVer = '1.3.0'
 
 TWT.threatApi = 'TWTv4=';
 TWT.tankModeApi = 'TMTv1=';
