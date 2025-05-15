@@ -465,17 +465,18 @@
                 this:RegisterForDrag("LeftButton");
                 this:SetMovable(1);
                 this:SetUserPlaced(true);
+                this:SetClampedToScreen(true);
             </OnLoad>
             <OnDragStart>
-                if getglobal('TWTMainLockButtonNT'):GetTexture() == 'Interface\\addons\\TWThreat\\images\\icon_unlocked'
-                then
-                this:StartMoving();
-                this.isMoving = true;
+                if getglobal('TWTMainLockButtonNT'):GetTexture() == 'Interface\\addons\\TWThreat\\images\\icon_unlocked' then
+                    this:StartMoving();
+                    this.isMoving = true;
                 end
             </OnDragStart>
             <OnDragStop>
                 this:StopMovingOrSizing();
                 this.isMoving = false;
+                TWT_CONFIG.windowPoint[4], TWT_CONFIG.windowPoint[5] = this:GetCenter()
             </OnDragStop>
         </Scripts>
         <Frames>

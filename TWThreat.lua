@@ -22,7 +22,7 @@ local TWT = CreateFrame("Frame")
 
 local has_superwow = SUPERWOW_VERSION or SetAutoloot
 
-TWT.addonVer = '1.2.3'
+TWT.addonVer = GetAddOnMetadata('TWThreat', 'Version')
 
 TWT.threatApi = 'TWTv4=';
 TWT.tankModeApi = 'TMTv1=';
@@ -110,7 +110,7 @@ TWT.fonts = {
 }
 
 
-function twtprint(a)
+local function twtprint(a)
     if a == nil then
         DEFAULT_CHAT_FRAME:AddMessage('[TWT]|cff0070de:' .. GetTime() .. '|cffffffff attempt to print a nil value.')
         return false
@@ -118,7 +118,7 @@ function twtprint(a)
     DEFAULT_CHAT_FRAME:AddMessage(TWT.classColors[TWT.class].c .. "[TWT] |cffffffff" .. a)
 end
 
-function twtdebug(a)
+local function twtdebug(a)
     local time = GetTime() + 0.0001
     if not TWT_CONFIG.debug then
         return false
@@ -212,6 +212,7 @@ SlashCmdList["TWTDEBUG"] = function(cmd)
 end
 
 TWT:RegisterEvent("ADDON_LOADED")
+TWT:RegisterEvent("PLAYER_LOGIN")
 TWT:RegisterEvent("CHAT_MSG_ADDON")
 TWT:RegisterEvent("PLAYER_REGEN_DISABLED")
 TWT:RegisterEvent("PLAYER_REGEN_ENABLED")
@@ -248,6 +249,11 @@ TWT:SetScript("OnEvent", function()
         end
         if event == 'ADDON_LOADED' and arg1 == 'TWThreat' then
             return TWT.init()
+        end
+        if event == "PLAYER_LOGIN" then
+            _G['TWTMain']:ClearAllPoints()
+            _G['TWTMain']:SetPoint(unpack(TWT_CONFIG.windowPoint))
+            return
         end
         if event == "PARTY_MEMBERS_CHANGED" then
             return TWT.getClasses()
@@ -442,6 +448,7 @@ function TWT.init()
         }
     end
 
+    TWT_CONFIG.windowPoint = TWT_CONFIG.windowPoint or {"CENTER", "UIParent", "BOTTOMLEFT", unpack({UIParent:GetCenter()})}
     TWT_CONFIG.windowScale = TWT_CONFIG.windowScale or 1
     TWT_CONFIG.glow = TWT_CONFIG.glow or false
     TWT_CONFIG.perc = TWT_CONFIG.perc or false
