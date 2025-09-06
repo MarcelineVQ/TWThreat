@@ -69,7 +69,9 @@ Requirements: in `party` or `raid`, attacking `elite` creatures or `bosses`.
 
 ## Slashcommands
 - `/twtshow`
-- `/twt show` 
+- `/twt show`
+- `/twt hide`
+- `/twt toggle`
 - `/twt tankmode`
 
 ## Settings
