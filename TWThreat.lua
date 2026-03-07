@@ -18,7 +18,8 @@ local __floor = math.floor
 local __abs = abs
 local __char = string.char
 
-local TWT = CreateFrame("Frame")
+_G.TWT = CreateFrame("Frame")
+local TWT = _G.TWT
 
 local has_superwow = SUPERWOW_VERSION or SetAutoloot
 
