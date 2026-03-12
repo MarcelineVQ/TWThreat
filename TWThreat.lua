@@ -465,6 +465,13 @@ end)
 
 function TWT.init()
 
+    local mainLevel = 50
+    _G['TWTMain']:SetFrameLevel(mainLevel)
+    local children = { _G['TWTMain']:GetChildren() }
+    for _, child in __pairs(children) do
+        child:SetFrameLevel(mainLevel + 1)
+    end
+
     if not TWT_CONFIG then
         TWT_CONFIG = {
             visible = true,
