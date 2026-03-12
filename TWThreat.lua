@@ -18,8 +18,15 @@ local __floor = math.floor
 local __abs = abs
 local __char = string.char
 
-_G.TWT = CreateFrame("Frame")
-local TWT = _G.TWT
+local function clearTable(t)
+    for k in __pairs(t) do
+        t[k] = nil
+    end
+    return t
+end
+
+local TWT = CreateFrame("Frame")
+_G.TWT = TWT
 
 local has_superwow = SUPERWOW_VERSION or SetAutoloot
 
@@ -44,6 +51,9 @@ TWT.lastAggroWarningGlowTime = 0
 
 TWT.AGRO = '-Pull Aggro at-'
 TWT.threatsFrames = {}
+TWT.barCache = {}
+TWT.cachedSort = nil
+TWT.lastAppliedFont = nil
 
 TWT.threats = {}
 
@@ -53,7 +63,7 @@ TWT.shouldRelay = false
 TWT.inCombat = false
 TWT.healerMasterTarget = ''
 
-TWT.updateSpeed = 0.2
+TWT.updateSpeed = 0.5
 
 TWT.targetFrameVisible = false
 TWT.PFUItargetFrameVisible = false
@@ -291,7 +301,7 @@ TWT:SetScript("OnEvent", function()
 
             local threatData = arg2
             if __find(threatData, '#') and __find(threatData, TWT.tankModeApi) then
-                local packetEx = __explode(threatData, '#')
+                local packetEx = __explode(threatData, '#', __scratch_packet)
                 if packetEx[1] and packetEx[2] then
                     threatData = packetEx[1]
                     TWT.handleTankModePacket(packetEx[2])
@@ -454,6 +464,13 @@ TWT.glowFader:SetScript("OnUpdate", function()
 end)
 
 function TWT.init()
+
+    local mainLevel = 50
+    _G['TWTMain']:SetFrameLevel(mainLevel)
+    local children = { _G['TWTMain']:GetChildren() }
+    for _, child in __pairs(children) do
+        child:SetFrameLevel(mainLevel + 1)
+    end
 
     if not TWT_CONFIG then
         TWT_CONFIG = {
@@ -704,7 +721,8 @@ function TWT.removeHealerMasterTarget()
     TWT.healerMasterTarget = ''
     TWT.targetName = ''
 
-    TWT.threats = TWT.wipe(TWT.threats)
+    clearTable(TWT.threats)
+    TWT.cachedSort = nil
 
     _G['TWTMainSettingsHealerMasterTargetButton']:SetText('From Target')
     _G['TWTMainSettingsHealerMasterTargetButtonNT']:SetVertexColor(1, 1, 1, 1)
@@ -771,14 +789,14 @@ function TWT.handleThreatPacket(packet)
 
     local playersString = __substr(packet, __find(packet, TWT.threatApi) + __strlen(TWT.threatApi), __strlen(packet))
 
-    TWT.threats = TWT.wipe(TWT.threats)
+    clearTable(TWT.threats)
     TWT.tankName = ''
 
-    local players = __explode(playersString, ';')
+    local players = __explode(playersString, ';', __scratch_players)
 
     for _, tData in players do
 
-        local msgEx = __explode(tData, ':')
+        local msgEx = __explode(tData, ':', __scratch_msg)
 
         -- udts handling
         if msgEx[1] and msgEx[2] and msgEx[3] and msgEx[4] and msgEx[5] then
@@ -849,13 +867,13 @@ function TWT.handleTankModePacket(packet)
 
     local playersString = __substr(packet, __find(packet, TWT.tankModeApi) + __strlen(TWT.tankModeApi), __strlen(packet))
 
-    TWT.tankModeThreats = TWT.wipe(TWT.tankModeThreats)
+    clearTable(TWT.tankModeThreats)
 
-    local players = __explode(playersString, ';')
+    local players = __explode(playersString, ';', __scratch_players)
 
     for _, tData in players do
 
-        local msgEx = __explode(tData, ':')
+        local msgEx = __explode(tData, ':', __scratch_msg)
 
         if msgEx[1] and msgEx[2] and msgEx[3] and msgEx[4] then
 
@@ -1000,9 +1018,10 @@ function TWT.combatEnd()
 
     twtdebug('wipe threats combat end')
 
-    TWT.threats = TWT.wipe(TWT.threats)
-    TWT.tankModeThreats = TWT.wipe(TWT.tankModeThreats)
-    TWT.history = TWT.wipe(TWT.history)
+    clearTable(TWT.threats)
+    clearTable(TWT.tankModeThreats)
+    clearTable(TWT.history)
+    TWT.cachedSort = nil
 
     if TWT_CONFIG.hideOOC then
         _G['TWTMain']:Hide()
@@ -1090,7 +1109,7 @@ function TWT.checkTargetFrames()
 end
 
 function TWT.hideThreatFrames(force)
-    if TWT.tableSize(TWT.threats) > 0 or force then
+    if next(TWT.threats) ~= nil or force then
         for name in next, TWT.threatsFrames do
             TWT.threatsFrames[name]:Hide()
         end
@@ -1102,6 +1121,8 @@ function TWT.targetChanged()
     if not UnitAffectingCombat('player') and _G['TWTMainSettings']:IsVisible() == 1 then
         return true
     end
+
+    TWT.checkTargetFrames()
 
     TWT.channel = (GetNumRaidMembers() > 0) and 'RAID' or 'PARTY'
 
@@ -1186,8 +1207,6 @@ function TWT.updateUI(from)
 
     --twtdebug('update ui call from [' .. (from or '') .. ']')
 
-    TWT.checkTargetFrames()
-
     if TWT_CONFIG.debug then
         _G['pps']:SetText('Traffic: ' .. TWT.round((totalPackets / (GetTime() - timeStart)) * 10) / 10
                 .. 'packets/s (' .. TWT.round(totalData / (GetTime() - timeStart)) .. ' cps)'
@@ -1220,25 +1239,67 @@ function TWT.updateUI(from)
 
     local index = 0
 
-    for name, data in TWT.ohShitHereWeSortAgain(TWT.threats, true) do
+    -- sort once per update, cache for reuse by updateTargetFrameThreatIndicators
+    TWT.sortThreats(TWT.threats)
+
+    -- check if font changed since last apply
+    local fontChanged = TWT.lastAppliedFont ~= TWT_CONFIG.font
+    if fontChanged then
+        TWT.lastAppliedFont = TWT_CONFIG.font
+        TWT.lastFontPath = "Interface\\addons\\TWThreat\\fonts\\" .. TWT_CONFIG.font .. ".ttf"
+    end
+
+    for name, data in TWT.iterCachedSort(TWT.threats) do
 
         if data and TWT.threats[TWT.name] and index < TWT_CONFIG.visibleBars then
 
             index = index + 1
+            local bc = TWT.barCache[index]
+            local newBar = false
             if not TWT.threatsFrames[index] then
+                newBar = true
                 TWT.threatsFrames[index] = CreateFrame('Frame', 'TWThreat' .. index, _G["TWTMain"], 'TWThreat')
+                local prefix = 'TWThreat' .. index
+                bc = {
+                    frame = _G[prefix],
+                    nameFs = _G[prefix .. 'Name'],
+                    tpsFs = _G[prefix .. 'TPS'],
+                    threatFs = _G[prefix .. 'Threat'],
+                    percFs = _G[prefix .. 'Perc'],
+                    bg = _G[prefix .. 'BG'],
+                    role = _G[prefix .. 'Role'],
+                    agro = _G[prefix .. 'AGRO'],
+                }
+                TWT.barCache[index] = bc
+            end
+            if not bc then
+                newBar = true
+                local prefix = 'TWThreat' .. index
+                bc = {
+                    frame = _G[prefix],
+                    nameFs = _G[prefix .. 'Name'],
+                    tpsFs = _G[prefix .. 'TPS'],
+                    threatFs = _G[prefix .. 'Threat'],
+                    percFs = _G[prefix .. 'Perc'],
+                    bg = _G[prefix .. 'BG'],
+                    role = _G[prefix .. 'Role'],
+                    agro = _G[prefix .. 'AGRO'],
+                }
+                TWT.barCache[index] = bc
             end
 
-            _G['TWThreat' .. index]:SetAlpha(TWT_CONFIG.combatAlpha)
-            _G['TWThreat' .. index]:SetWidth(TWT.windowWidth - 2)
+            bc.frame:SetAlpha(TWT_CONFIG.combatAlpha)
+            bc.frame:SetWidth(TWT.windowWidth - 2)
 
-            _G['TWThreat' .. index .. 'Name']:SetFont("Interface\\addons\\TWThreat\\fonts\\" .. TWT_CONFIG.font .. ".ttf", 15, "OUTLINE")
-            _G['TWThreat' .. index .. 'TPS']:SetFont("Interface\\addons\\TWThreat\\fonts\\" .. TWT_CONFIG.font .. ".ttf", 15, "OUTLINE")
-            _G['TWThreat' .. index .. 'Threat']:SetFont("Interface\\addons\\TWThreat\\fonts\\" .. TWT_CONFIG.font .. ".ttf", 15, "OUTLINE")
-            _G['TWThreat' .. index .. 'Perc']:SetFont("Interface\\addons\\TWThreat\\fonts\\" .. TWT_CONFIG.font .. ".ttf", 15, "OUTLINE")
+            if fontChanged or newBar then
+                bc.nameFs:SetFont(TWT.lastFontPath, 15, "OUTLINE")
+                bc.tpsFs:SetFont(TWT.lastFontPath, 15, "OUTLINE")
+                bc.threatFs:SetFont(TWT.lastFontPath, 15, "OUTLINE")
+                bc.percFs:SetFont(TWT.lastFontPath, 15, "OUTLINE")
+            end
 
-            _G['TWThreat' .. index]:SetHeight(TWT_CONFIG.barHeight - 1)
-            _G['TWThreat' .. index .. 'BG']:SetHeight(TWT_CONFIG.barHeight - 2)
+            bc.frame:SetHeight(TWT_CONFIG.barHeight - 1)
+            bc.bg:SetHeight(TWT_CONFIG.barHeight - 2)
 
             TWT.threatsFrames[index]:ClearAllPoints()
             TWT.threatsFrames[index]:SetPoint("TOPLEFT", _G["TWTMain"], "TOPLEFT", 0,
@@ -1247,43 +1308,43 @@ function TWT.updateUI(from)
 
 
             -- icons
-            _G['TWThreat' .. index .. 'AGRO']:Hide()
-            _G['TWThreat' .. index .. 'Role']:Show()
+            bc.agro:Hide()
+            bc.role:Show()
             if name ~= TWT.AGRO then
 
-                _G['TWThreat' .. index .. 'Role']:SetWidth(TWT_CONFIG.barHeight - 2)
-                _G['TWThreat' .. index .. 'Role']:SetHeight(TWT_CONFIG.barHeight - 2)
-                _G['TWThreat' .. index .. 'Name']:SetPoint('LEFT', _G['TWThreat' .. index .. 'Role'], 'RIGHT', 1 + (TWT_CONFIG.barHeight / 15), -1)
+                bc.role:SetWidth(TWT_CONFIG.barHeight - 2)
+                bc.role:SetHeight(TWT_CONFIG.barHeight - 2)
+                bc.nameFs:SetPoint('LEFT', bc.role, 'RIGHT', 1 + (TWT_CONFIG.barHeight / 15), -1)
                 if TWT.roles[name] then
-                    _G['TWThreat' .. index .. 'Role']:SetTexture('Interface\\Icons\\' .. TWT.roles[name])
-                    _G['TWThreat' .. index .. 'Role']:SetTexCoord(0.08, 0.92, 0.08, 0.92)
-                    _G['TWThreat' .. index .. 'Role']:Show()
+                    bc.role:SetTexture('Interface\\Icons\\' .. TWT.roles[name])
+                    bc.role:SetTexCoord(0.08, 0.92, 0.08, 0.92)
+                    bc.role:Show()
                 else
-                    _G['TWThreat' .. index .. 'Role']:SetTexture('Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes')
-                    _G['TWThreat' .. index .. 'Role']:SetTexCoord(unpack(TWT.classCoords[data.class]))
+                    bc.role:SetTexture('Interface\\Glues\\CharacterCreate\\UI-CharacterCreate-Classes')
+                    bc.role:SetTexCoord(unpack(TWT.classCoords[data.class]))
                 end
 
             else
-                _G['TWThreat' .. index .. 'AGRO']:Show()
-                _G['TWThreat' .. index .. 'Role']:Hide()
+                bc.agro:Show()
+                bc.role:Hide()
             end
 
 
             -- tps
-            _G['TWThreat' .. index .. 'TPS']:SetText(data.tps)
+            bc.tpsFs:SetText(data.tps)
 
             -- labels
-            TWT.setBarLabels(_G['TWThreat' .. index .. 'Perc'], _G['TWThreat' .. index .. 'Threat'], _G['TWThreat' .. index .. 'TPS'])
+            TWT.setBarLabels(bc.percFs, bc.threatFs, bc.tpsFs)
 
             -- perc
-            _G['TWThreat' .. index .. 'Perc']:SetText(TWT.round(data.perc) .. '%')
+            bc.percFs:SetText(TWT.round(data.perc) .. '%')
 
             if TWT.name ~= TWT.tankName and name == TWT.AGRO then
-                _G['TWThreat' .. index .. 'Perc']:SetText(100 - TWT.round(TWT.threats[TWT.name].perc) .. '%')
+                bc.percFs:SetText(100 - TWT.round(TWT.threats[TWT.name].perc) .. '%')
             end
 
             -- name
-            _G['TWThreat' .. index .. 'Name']:SetText(TWT.classColors['priest'].c .. name)
+            bc.nameFs:SetText(TWT.classColors['priest'].c .. name)
 
             -- bar width and color
             local color = TWT.classColors[data.class]
@@ -1315,7 +1376,7 @@ function TWT.updateUI(from)
 
                 TWT.updateTitleBarText(TWT.targetName .. ' (' .. TWT.round(data.perc) .. '%)')
 
-                _G['TWThreat' .. index .. 'Threat']:SetText(TWT.formatNumber(data.threat))
+                bc.threatFs:SetText(TWT.formatNumber(data.threat))
 
                 if data.perc == 0 then TWT.barAnimator:animateTo(index, empty) else TWT.barAnimator:animateTo(index, data.perc) end
 
@@ -1323,28 +1384,28 @@ function TWT.updateUI(from)
 
                 TWT.barAnimator:animateTo(index, nil)
 
-                _G['TWThreat' .. index .. 'BG']:SetWidth(TWT.windowWidth - 2)
-                _G['TWThreat' .. index .. 'Threat']:SetText('+' .. TWT.formatNumber(data.threat - TWT.threats[TWT.name].threat))
+                bc.bg:SetWidth(TWT.windowWidth - 2)
+                bc.threatFs:SetText('+' .. TWT.formatNumber(data.threat - TWT.threats[TWT.name].threat))
 
                 local colorLimit = 50
 
                 if TWT.threats[TWT.name].perc >= 0 and TWT.threats[TWT.name].perc < colorLimit then
-                    _G['TWThreat' .. index .. 'BG']:SetVertexColor(TWT.threats[TWT.name].perc / colorLimit, 1, 0, 0.9)
+                    bc.bg:SetVertexColor(TWT.threats[TWT.name].perc / colorLimit, 1, 0, 0.9)
                 elseif TWT.threats[TWT.name].perc >= colorLimit then
-                    _G['TWThreat' .. index .. 'BG']:SetVertexColor(1, 1 - (TWT.threats[TWT.name].perc - colorLimit) / colorLimit, 0, 0.9)
+                    bc.bg:SetVertexColor(1, 1 - (TWT.threats[TWT.name].perc - colorLimit) / colorLimit, 0, 0.9)
                 end
 
                 if TWT.tankName == TWT.name then
-                    _G['TWThreat' .. index .. 'BG']:SetVertexColor(1, 0, 0, 1)
-                    _G['TWThreat' .. index .. 'Perc']:SetText('')
+                    bc.bg:SetVertexColor(1, 0, 0, 1)
+                    bc.percFs:SetText('')
                 end
 
             else
 
                 TWT.barAnimator:animateTo(index, data.perc)
 
-                _G['TWThreat' .. index .. 'Threat']:SetText(TWT.formatNumber(data.threat))
-                _G['TWThreat' .. index .. 'BG']:SetVertexColor(color.r, color.g, color.b, 0.9)
+                bc.threatFs:SetText(TWT.formatNumber(data.threat))
+                bc.bg:SetVertexColor(color.r, color.g, color.b, 0.9)
             end
 
             if data.tank then
@@ -1354,7 +1415,7 @@ function TWT.updateUI(from)
             end
 
             if name == TWT.name then
-                _G['TWThreat' .. index .. 'BG']:SetVertexColor(1, 0.2, 0.2, 1)
+                bc.bg:SetVertexColor(1, 0.2, 0.2, 1)
                 TWT.updateTargetFrameThreatIndicators(data.perc)
             end
 
@@ -1374,7 +1435,9 @@ function TWT.updateUI(from)
 
         _G['TWTMainTankModeWindow']:SetHeight(0)
 
-        if TWT.tableSize(TWT.tankModeThreats) > 1 then
+        local tmCount = 0
+        for _ in next, TWT.tankModeThreats do tmCount = tmCount + 1 end
+        if tmCount > 1 then
 
             local i = 0
             for guid, data in next, TWT.tankModeThreats do
@@ -1527,25 +1590,23 @@ function TWT.calcTPS(name)
         return 0
     end
 
-    local older = time()
-    for t in next, data do
-        if t < older then
-            older = t
-        end
-    end
+    local now = time()
 
-    if TWT.tableSize(data) > 10 then
-        TWT.history[name][older] = nil
+    -- prune entries older than 10 seconds
+    for t in next, data do
+        if now - t > 10 then
+            data[t] = nil
+        end
     end
 
     local tps = 0
     local mean = 0
 
-    local time = time()
-
-    for i = 0, TWT.tableSize(data) - 1 do
-        if TWT.history[name][time - i] and TWT.history[name][time - i - 1] then
-            tps = tps + TWT.history[name][time - i] - TWT.history[name][time - i - 1]
+    for i = 0, 9 do
+        local cur = data[now - i]
+        local prev = data[now - i - 1]
+        if cur and prev then
+            tps = tps + cur - prev
             mean = mean + 1
         end
     end
@@ -1652,18 +1713,12 @@ function TWT.updateTargetFrameThreatIndicators(perc)
 
         local tankModePerc = 0
 
-        if TWT_CONFIG.tankMode then
+        local thirdEntry = TWT.cachedSort and TWT.cachedSort[3]
+
+        if TWT_CONFIG.tankMode and thirdEntry then
             local second = ''
-            local index = 0
-            for name, data in TWT.ohShitHereWeSortAgain(TWT.threats, true) do
-                index = index + 1
-                if index == 3 then
-                    tankModePerc = TWT.round(data.perc)
-                    second = TWT.unitNameForTitle(name, 6) .. ' ' .. tankModePerc .. '%'
-                    break
-                    --TWT.classColors[TWT.getClass(name)].c ..
-                end
-            end
+            tankModePerc = TWT.round(thirdEntry.perc)
+            second = TWT.unitNameForTitle(thirdEntry.name, 6) .. ' ' .. tankModePerc .. '%'
             if second ~= '' then
                 _G['TWThreatDisplayTargetNumericPerc']:SetText(second)
             else
@@ -1717,17 +1772,12 @@ function TWT.updateTargetFrameThreatIndicators(perc)
 
         local tankModePerc = 0
 
-        if TWT_CONFIG.tankMode then
+        local thirdEntry = TWT.cachedSort and TWT.cachedSort[3]
+
+        if TWT_CONFIG.tankMode and thirdEntry then
             local second = ''
-            local index = 0
-            for name, data in TWT.ohShitHereWeSortAgain(TWT.threats, true) do
-                index = index + 1
-                if index == 3 then
-                    tankModePerc = TWT.round(data.perc)
-                    second = TWT.unitNameForTitle(name, 6) .. ' ' .. tankModePerc .. '%'
-                    break
-                end
-            end
+            tankModePerc = TWT.round(thirdEntry.perc)
+            second = TWT.unitNameForTitle(thirdEntry.name, 6) .. ' ' .. tankModePerc .. '%'
             if second ~= '' then
                 _G['TWThreatDisplayTargetPFUINumericPerc']:SetText(second)
             else
@@ -2194,17 +2244,70 @@ function TWTTargetButton_OnClick(index)
     return false
 end
 
-function __explode(str, delimiter)
-    local result = {}
+local __scratch_players = {}
+local __scratch_msg = {}
+local __scratch_packet = {}
+
+function __explode(str, delimiter, reuse)
+    local result = reuse or {}
+    local n = 0
     local from = 1
     local delim_from, delim_to = __find(str, delimiter, from, 1, true)
     while delim_from do
-        __tinsert(result, __substr(str, from, delim_from - 1))
+        n = n + 1
+        result[n] = __substr(str, from, delim_from - 1)
         from = delim_to + 1
         delim_from, delim_to = __find(str, delimiter, from, true)
     end
-    __tinsert(result, __substr(str, from))
+    n = n + 1
+    result[n] = __substr(str, from)
+    -- clear stale entries from reused table
+    if reuse then
+        local old = n + 1
+        while result[old] do
+            result[old] = nil
+            old = old + 1
+        end
+    end
     return result
+end
+
+local __sort_cache = {}
+
+function TWT.sortThreats(t)
+    local n = 0
+    for name, l in __pairs(t) do
+        n = n + 1
+        local entry = __sort_cache[n]
+        if not entry then
+            entry = {}
+            __sort_cache[n] = entry
+        end
+        entry.threat = l.threat
+        entry.perc = l.perc
+        entry.tps = l.tps
+        entry.name = name
+    end
+    -- clear leftover entries
+    for i = n + 1, __getn(__sort_cache) do
+        __sort_cache[i] = nil
+    end
+    __tsort(__sort_cache, function(b, c)
+        return b.perc > c.perc
+    end)
+    TWT.cachedSort = __sort_cache
+    return __sort_cache
+end
+
+function TWT.iterCachedSort(t)
+    local a = TWT.cachedSort or TWT.sortThreats(t)
+    local i = 0
+    return function()
+        i = i + 1
+        local entry = a[i]
+        if entry == nil then return nil end
+        return entry.name, t[entry.name]
+    end
 end
 
 function TWT.ohShitHereWeSortAgain(t, reverse)
